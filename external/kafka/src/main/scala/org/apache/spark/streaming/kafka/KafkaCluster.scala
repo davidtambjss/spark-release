@@ -17,12 +17,14 @@
 
 package org.apache.spark.streaming.kafka
 
+import org.apache.kafka.common.protocol.SecurityProtocol
+
 import scala.util.control.NonFatal
 import scala.util.Random
 import scala.collection.mutable.ArrayBuffer
 import java.util.Properties
 import kafka.api._
-import kafka.common.{ErrorMapping, OffsetMetadataAndError, TopicAndPartition}
+import kafka.common.{OffsetAndMetadata, ErrorMapping, OffsetMetadataAndError, TopicAndPartition}
 import kafka.consumer.{ConsumerConfig, SimpleConsumer}
 import org.apache.spark.SparkException
 
@@ -49,7 +51,7 @@ class KafkaCluster(val kafkaParams: Map[String, String]) extends Serializable {
 
   def connect(host: String, port: Int): SimpleConsumer =
     new SimpleConsumer(host, port, config.socketTimeoutMs,
-      config.socketReceiveBufferBytes, config.clientId)
+      config.socketReceiveBufferBytes, config.clientId, SecurityProtocol.valueOf(config.securityProtocol))
 
   def connectLeader(topic: String, partition: Int): Either[Err, SimpleConsumer] =
     findLeader(topic, partition).right.map(hp => connect(hp._1, hp._2))
@@ -260,14 +262,14 @@ class KafkaCluster(val kafkaParams: Map[String, String]) extends Serializable {
       offsets: Map[TopicAndPartition, Long]
     ): Either[Err, Map[TopicAndPartition, Short]] = {
     setConsumerOffsetMetadata(groupId, offsets.map { kv =>
-      kv._1 -> OffsetMetadataAndError(kv._2)
+      kv._1 -> OffsetAndMetadata(kv._2)
     })
   }
 
   /** Requires Kafka >= 0.8.1.1 */
   def setConsumerOffsetMetadata(
       groupId: String,
-      metadata: Map[TopicAndPartition, OffsetMetadataAndError]
+      metadata: Map[TopicAndPartition, OffsetAndMetadata]
     ): Either[Err, Map[TopicAndPartition, Short]] = {
     var result = Map[TopicAndPartition, Short]()
     val req = OffsetCommitRequest(groupId, metadata)
@@ -275,7 +277,7 @@ class KafkaCluster(val kafkaParams: Map[String, String]) extends Serializable {
     val topicAndPartitions = metadata.keySet
     withBrokers(Random.shuffle(config.seedBrokers), errs) { consumer =>
       val resp = consumer.commitOffsets(req)
-      val respMap = resp.requestInfo
+      val respMap = resp.commitStatus
       val needed = topicAndPartitions.diff(result.keySet)
       needed.foreach { tp: TopicAndPartition =>
         respMap.get(tp).foreach { err: Short =>
